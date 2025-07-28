@@ -17,3 +17,17 @@ __pycache__/
 *.parquet
 *.duckdb
 chroma_db/
+.venv/
+.venv2/
+venv/
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+*.dll
+*.lib
+*.so
+*.egg-info/
+*.parquet
+*.duckdb
+chroma_db/
