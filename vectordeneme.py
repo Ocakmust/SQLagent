@@ -21,7 +21,7 @@ class VectorStore:
             try:
                 self.collection = self.client.get_collection(name=collection_name)
                 logger.info(f"Loaded existing collection: {collection_name}")
-            except:  # Collection doesn't exist
+            except:  
                 self.collection = self.client.create_collection(
                     name=collection_name,
                     embedding_function=embedding_functions.SentenceTransformerEmbeddingFunction(
@@ -94,7 +94,6 @@ class ContextFind:
     def __init__(self, document_path: str, collection_name: str = None):
         self.document_processor = DocumentProcessor()
         
-        # Use document name as collection name if not provided
         if collection_name is None:
             document_name = Path(document_path).stem
             collection_name = f"context_{document_name}"
@@ -129,19 +128,16 @@ class ContextFind:
     def _add_vector(self):
         """Add document content to vector store"""
         try:
-            # Extract text using the appropriate processor
             text = self.document_processor.extract_text_from_documents(self.document_path)
             
             if not text.strip():
                 raise ValueError(f"No text extracted from document: {self.document_path}")
             
-            # Split text into chunks
-            chunks = self._split_text_into_chunks(text, chunk_size=20,overlap=1)
+            chunks = self._split_text_into_chunks(text, chunk_size=100,overlap=10)
             
             if not chunks:
                 raise ValueError("No chunks created from document text")
             
-            # Create metadata and IDs
             document_name = Path(self.document_path).stem
             metadata = [
                 {
@@ -185,33 +181,33 @@ class ContextFind:
         
         return chunks
 
-# # USAGE EXAMPLES:
-# def example_usage():
-#     """Example usage with different document types"""
+# USAGE EXAMPLES:
+def example_usage():
+    """Example usage with different document types"""
     
-#     # Example 1: PDF document
-#     try:
-#         pdf_context = ContextFind("file.pdf")
-#         context = pdf_context.return_context("Bireysel Kredi Kartı Var mı ?",3)
-#         print(f"PDF Context: {context}")
-#     except Exception as e:
-#         print(f"PDF Error: {e}")
+    # Example 1: PDF document
+    try:
+        pdf_context = ContextFind("yurt.pdf")
+        context = pdf_context.return_context("Değişim programına giden öğrenci",3)
+        print(f"PDF Context: {context}")
+    except Exception as e:
+        print(f"PDF Error: {e}")
     
-#     # Example 2: Word document
-#     # try:
-#     #     docx_context = ContextFind("manual.docx")
-#     #     context = docx_context.return_context("How to configure the system?")
-#     #     print(f"Word Context: {context}")
-#     # except Exception as e:
-#     #     print(f"Word Error: {e}")
+    # Example 2: Word document
+    # try:
+    #     docx_context = ContextFind("manual.docx")
+    #     context = docx_context.return_context("How to configure the system?")
+    #     print(f"Word Context: {context}")
+    # except Exception as e:
+    #     print(f"Word Error: {e}")
     
-#     # Example 3: Text document
-#     # try:
-#     #     txt_context = ContextFind("roadmap.txt")
-#     #     context = txt_context.return_context("could i tell me what should i learn ?")
-#     #     print(f"Text Context: {context}")
-#     # except Exception as e:
-#     #     print(f"Text Error: {e}")
+    # Example 3: Text document
+    # try:
+    #     txt_context = ContextFind("roadmap.txt")
+    #     context = txt_context.return_context("could i tell me what should i learn ?")
+    #     print(f"Text Context: {context}")
+    # except Exception as e:
+    #     print(f"Text Error: {e}")
 
-# if __name__ == "__main__":
-#     example_usage()
+if __name__ == "__main__":
+    example_usage()
