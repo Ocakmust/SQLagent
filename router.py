@@ -11,7 +11,6 @@ from document import DocumentProcessor
 
 from loggerCenter import LoggerCenter
 
-# Import agents and utilities
 from utils import AgentResult, BaseSpecializedAgent
 from analiz import DataAnalysisAgent
 from db_agent import SQLQuerryAgent
@@ -37,12 +36,12 @@ class RouterAgent(BaseSpecializedAgent):
         self.csv_dataframe = None
         
         super().__init__("RouterAgent", llm)
-        
+        self.original_query = None
         self._load_resources()
         self._initialize_agents(llm)
     
     def _load_resources(self):
-        """kaynakları yükle"""
+
         self.dataframe = None
         csv_path = self.config.get('csv_path')
         if csv_path and Path(csv_path).exists():
@@ -84,7 +83,12 @@ class RouterAgent(BaseSpecializedAgent):
         """sub agentları başlat"""
         try:
             if self.dataframe is not None:
-                self.sub_agents['data'] = DataAnalysisAgent(llm=llm, df=self.dataframe)
+                self.sub_agents['data'] = DataAnalysisAgent(
+                    llm=llm,
+                    df=self.dataframe,
+                    doc_path=self.config.get('doc_path'),
+                    column_info_path=self.config.get('column_info')
+                    )
                 logger.info("Data Analysis Agent ready")
             
             if self.db_manager is not None:
@@ -113,33 +117,43 @@ class RouterAgent(BaseSpecializedAgent):
         if self.db_manager:
             try:
                 tables = self.db_manager.get_table_names()
+            
+                schema_info = []
+                for table in tables[:5]:  
+                    try:
+                        schema = self.db_manager.get_table_schema(table)
+                        columns_info = ', '.join([f"{col['column_name']} ({col['data_type']})" for col in schema])
+                        schema_info.append(f"Table {table}: {columns_info}")
+                    except Exception as e:
+                        logger.warning(f"Could not get schema for table {table}: {e}")
+                        schema_info.append(f"Table {table}: Schema unavailable")
+                
+                available_schema = "\n".join(schema_info)
+                available_tables = ', '.join(tables)
+                
+                db_info=f"""
+DATABASE SCHEMA:
+Available Tables: 
+{available_tables}
+
+Table Schemas:
+{available_schema}
+"""
+
                 if tables:
-                    resources.append(f"Database: Tables available: {', '.join(tables[:5])}")
+                    resources.append(f"Database: {db_info}")
                 else:
                     resources.append("Database: Connected but no tables found")
             except:
                 resources.append("Database: Connected")
         
-        if self.context_finder:
-            resources.append("Documents for Database: Available for context search")
+        if self.column_info:
+            resources.append("Column infos are available.")
         
         resources.append("External APIs: Weather, news available")
         
         return "\n".join(resources) if resources else "No resources loaded"
 
-    def _get_pdf_context(self, query: str) -> str:
-        """query için context bul"""
-        if not self.context_finder:
-            return ""
-        
-        try:
-            context_result = self.context_finder.search_context(query)
-            if context_result:
-                return f"\nRELEVANT CONTEXT FROM DOCUMENTS:\n{context_result}\n"
-        except Exception as e:
-            logger.error(f"Context search error: {e}")
-        
-        return ""
 
     def _get_system_prompt(self) -> str:
         """Basit sistem prompt'u"""
@@ -158,21 +172,26 @@ SIMPLE ROUTING RULES:
 - If question is about database/tables → use route_to_sql  
 - If question is about weather/news/current info → use route_to_api
 
-IMPORTANT: Use only ONE tool per question. After getting the result, provide the final answer immediately.
+IMPORTANT: 
+1. Use only ONE tool per question
+2. Pass the EXACT user query to the tool without any modifications or comments
+3. After getting the result, provide the final answer immediately
 
-NOTE: If the user query contains additional context information, use that context to make better routing decisions and pass it along to the selected tool !."""
+NOTE: If the user query contains additional context information, use that context to make better routing decisions but pass the original query as-is to the selected tool."""
 
     def _setup_tools(self):
         """Router araçlarını ayarla"""
         
         class DataRoutingInput(BaseModel):
-            query: str = Field(description="Query for data analysis")
+            query: str = Field(description="Original user query for data analysis")
         
         class SQLRoutingInput(BaseModel):
-            query: str = Field(description="Query for database operations")
+            query: str = Field(description="Original user query for database operations")
         
         class APIRoutingInput(BaseModel):
-            query: str = Field(description="Query for external APIs")
+            query: str = Field(description="Original user query for external APIs")
+
+ 
 
         def route_to_data(query: str) -> str:
             """Route to data analysis agent"""
@@ -180,13 +199,16 @@ NOTE: If the user query contains additional context information, use that contex
                 return "CSV data not available"
             
             try:
-                logger.info(f"Routing to data analysis: {query}")
-                result = self.sub_agents['data'].process(query)
-                
-                if hasattr(result, 'metadata') and result.metadata:
-                    self.csv_dataframe = result.metadata.get('dataframe')
+                actual_query = self.original_query if self.original_query else query
+                logger.info(f"Routing to data analysis: {actual_query}")
+                result = self.sub_agents['data'].process(actual_query)
                 
                 if result.success:
+                    if hasattr(result, 'metadata') and result.metadata is not None:
+                        df = result.metadata.get('dataframe')
+                        if df is not None and isinstance(df, pd.DataFrame):
+                            self.csv_dataframe = df
+
                     output = result.data.get('output', result.data) if isinstance(result.data, dict) else result.data
                     return str(output)
                 else:
@@ -200,16 +222,17 @@ NOTE: If the user query contains additional context information, use that contex
                 return "Database not available"
             
             try:
-                logger.info(f"Routing to SQL: {query}")
-                result = self.sub_agents['sql'].process(query)
+                actual_query = self.original_query if self.original_query else query
+                logger.info(f"Routing to SQL: {actual_query}")
+                result = self.sub_agents['sql'].process(actual_query)
                 
                 if result.success:
+                    if hasattr(result, 'metadata') and result.metadata is not None:
+                        df = result.metadata.get("dataframe")
+                        if df is not None and isinstance(df, pd.DataFrame):
+                            self.sql_dataframe = df
                     
                     output = result.data.get('output', result.data) if isinstance(result.data, dict) else result.data
-                    
-                    if hasattr(result, 'metadata') and result.metadata and result.metadata.get("the_answer"):
-                        self.sql_dataframe = result.metadata["the_answer"].dataframe
-                    
                     return str(output)
                 else:
                     return f"SQL error: {result.error}"
@@ -222,8 +245,9 @@ NOTE: If the user query contains additional context information, use that contex
                 return "API agent not available"
             
             try:
-                logger.info(f"Routing to API: {query}")
-                result = self.sub_agents['api'].process(query)
+                actual_query = self.original_query if self.original_query else query
+                logger.info(f"Routing to API: {actual_query}")
+                result = self.sub_agents['api'].process(actual_query)
                 
                 if result.success:
                     return str(result.data)
@@ -235,19 +259,19 @@ NOTE: If the user query contains additional context information, use that contex
         self.tools = [
             StructuredTool.from_function(
                 name="route_to_data",
-                description="Use for CSV data analysis, statistics, charts",
+                description="Use for CSV data analysis, statistics, charts. Pass the original user query without modifications.",
                 func=route_to_data,
                 args_schema=DataRoutingInput
             ),
             StructuredTool.from_function(
                 name="route_to_sql", 
-                description="Use for database queries and SQL operations",
+                description="Use for database queries and SQL operations. Pass the original user query without modifications.",
                 func=route_to_sql,
                 args_schema=SQLRoutingInput
             ),
             StructuredTool.from_function(
                 name="route_to_api",
-                description="Use for weather, news, external information",
+                description="Use for weather, news, external information. Pass the original user query without modifications.",
                 func=route_to_api,
                 args_schema=APIRoutingInput
             )
@@ -258,28 +282,19 @@ NOTE: If the user query contains additional context information, use that contex
         logger.info(f"Router processing query: {query}")
         
         try:
-            enhanced_query = query
-            if self.context_finder:
-                try:
-                    pdf_context = self._get_pdf_context(query)
-                    if pdf_context.strip():
-                        enhanced_query = f"{query}\n\n Context from documents : {pdf_context}"
-                        logger.info("PDF context added to query")
-                except Exception as e:
-                    logger.error(f"Context addition failed: {e}")
+            # Store original query for sub-agents
+            self.original_query = query
             
-            response = self.agent_executor.invoke({"input": enhanced_query})
+            response = self.agent_executor.invoke({"input": query})
             
             return AgentResult(
                 success=True,
                 data=response,
                 metadata={
                     "agent": self.agent_name,
-                    "query": query,
-                    "enhanced_query": enhanced_query,
+                    "original_query": query,
                     "sql_dataframe": self.sql_dataframe,
                     "csv_dataframe": self.csv_dataframe,
-                    "pdf_context_used": bool(self.context_finder and pdf_context.strip()) if 'pdf_context' in locals() else False
                 }
             )
             
@@ -301,7 +316,8 @@ def main():
             "password": "123",
             "port": "5432"
         },
-        'doc_path':"temp_context_columns.pdf"
+        'doc_path':"temp_context_columns.pdf",
+        'csv_path':"Data/results.csv"
     }
     
     try:
@@ -341,13 +357,15 @@ def main():
                     # Check for DataFrames
                     if result.metadata.get("sql_dataframe") is not None:
                         sql_df = result.metadata["sql_dataframe"] 
-                        print(f"\nSQL DataFrame available: {sql_df.shape}")
-                        print(sql_df.head())
+                        if isinstance(sql_df, pd.DataFrame) and not sql_df.empty:
+                            print(f"\nSQL DataFrame available: {sql_df.shape}")
+                            print(sql_df.head())
                     
                     if result.metadata.get("csv_dataframe") is not None:
                         csv_df = result.metadata["csv_dataframe"]
-                        print(f"\nCSV DataFrame available: {csv_df.shape}")
-                        print(csv_df.head())
+                        if isinstance(csv_df, pd.DataFrame) and not csv_df.empty:
+                            print(f"\nCSV DataFrame available: {csv_df.shape}")
+                            print(csv_df.head())
                         
                 else:
                     print(f"Error: {result.error}")

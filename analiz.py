@@ -1,24 +1,62 @@
 import os
+from typing import Optional
 from langchain_groq import ChatGroq
 import pandas as pd
 from langchain.chains import LLMChain
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain.tools import Tool
+from pydantic import BaseModel
+from document import DocumentProcessor
 from loggerCenter import LoggerCenter
 from utils import AgentResult, BaseSpecializedAgent, CodeOutput
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.agents import create_tool_calling_agent, AgentExecutor
 
+from vectordeneme import ContextFind
+
 logger = LoggerCenter().get_logger()
+
+class PythonExecutionResult(BaseModel):
+    success: bool
+    dataframe: Optional[pd.DataFrame] = None
+    error_message: Optional[str] = None
+    formatted_output: str = ""
+
+    class Config:
+        arbitrary_types_allowed = True
 
 class DataAnalysisAgent(BaseSpecializedAgent):
     """Specialized agent for data analysis tasks"""
     
-    def __init__(self, llm: ChatGroq, df: pd.DataFrame):
+    def __init__(self, llm: ChatGroq, df: pd.DataFrame,doc_path:str=None,column_info_path:str=None):
         self.df = df
+        self.doc_path=doc_path
+        self.column_info_path=column_info_path
         self.parser = PydanticOutputParser(pydantic_object=CodeOutput)
+
         super().__init__("DataAnalysis", llm)
+
+        self.the_answer=None
+        self.data_info=None
+        self.data_info_loaded = False
+
+        self.context_finder=None
+        if self.doc_path is not None:
+            try:
+                self.context_finder=ContextFind(doc_path)
+                logger.info("Context finder has been set")
+            except Exception as e:
+                logger.error(f"Error while starting context finder: {e}")
+            
+        self.columnInfo=None
+        if self.columnInfo is not None:
+
+            try:
+                self.columnInfo=DocumentProcessor().extract_text_from_documents(column_info_path)
+                logger.info("Column info uploaded")
+            except:
+                logger.error(f"Error while starting column info: {e}")
 
     def _get_system_prompt(self) -> str:
         """System prompt with safe sample data (first 5 rows)"""
@@ -26,40 +64,50 @@ class DataAnalysisAgent(BaseSpecializedAgent):
         
         data_context = ""
         if self.df is not None:
-            try:
-                num_rows = self.df.shape[0]
-                num_cols = self.df.shape[1]
-                
-                sample_df = self.df.head(3)
-                sample_str = sample_df.to_string(index=False)
-                safe_sample = sample_str.replace('{', '[').replace('}', ']')
-                
-                data_context = f"""
+            
+            num_rows = self.df.shape[0]
+            num_cols = self.df.shape[1]
+            
+            sample_df = self.df.head(3)
+            sample_str = sample_df.to_string(index=False)
+            safe_sample = sample_str.replace('{', '[').replace('}', ']')
+            
+            data_context = f"""
 CURRENT DATA CONTEXT:
 - Data available: {num_rows} rows x {num_cols} columns
 - Sample data:
 {safe_sample}
 """
-            except Exception as e:
-                data_context = f"\nData loading error: {str(e)}"
+            
         else:
             data_context = "\nCURRENT DATA CONTEXT:\n- Data is available: NO"
         
         return f"""You are a specialized data analysis expert. Your role is to help analyze data using the available tools.
 
 AVAILABLE TOOLS:
-1. data_summary: Get comprehensive data overview (columns, types, statistics, sample)
+1. data_summary: Get comprehensive data overview (columns, statistics, sample, column infos , context/meaning of the columns)
 2. generate_pandas_code: Generate pandas code from natural language query
 3. execute_python_code: Execute pandas code safely on the DataFrame
 
-IMPORTANT INSTRUCTIONS:
+IMPORTANT INSTRUCTIONS and WORKFLOW:
 - You have access to a DataFrame with real data (see sample below)
-- When user asks about data structure/columns/info use data_summary for complete overview
-- When user wants specific analysis/filtering/calculations you can either:
+- When user asks about data structure/columns/info/context use data_summary for complete overview
+  * Use data summary tool
+- When user wants specific analysis/filtering/calculations:
+  *You SHOULD start by calling get_data_summary first to load all necessary information
+  *Then handle the user request, you can either
   * Use generate_pandas_code to generate the code first, then execute_python_code to run it
   * Or directly use execute_python_code if you know the pandas code
 - Always assign results to a variable named 'result' when using execute_python_code
 - Be helpful and provide clear explanations of the results
+
+
+ANTI-HALLUCINATION RULES (CRITICAL):
+1. NEVER make up names, IDs, or any data not explicitly shown in results
+2. NEVER create fictional explanations or stories about the data
+3. NEVER interpret meanings beyond what the data explicitly shows
+4. If asked about specific individuals, ONLY mention those actually present in results
+5. Base ALL analysis strictly on factual numbers and values shown
 
 VERY IMPORTANT:
 -IF CODE GENERATING TOOL (generate_pandas_code) IS USED RETURN CODE ONLY
@@ -74,6 +122,11 @@ Your goal is to help users understand and analyze their data effectively!
         template = """
 You are an expert data analyst. You analyze the question STEP BY STEP and generate a Python pandas code that answers the question using the provided DataFrame.
 
+
+YOUR DATA CONTEXT:
+{data_info}
+
+
 IMPORTANT:
 1. Do NOT include anything outside of CODE and an Explanation.
 2. Explanation MUST be about what is understood from the QUESTION.
@@ -83,20 +136,17 @@ Your response must be exactly this format:
 {format_instructions}
 
 CRITICAL REQUIREMENTS:
-1. The code must assign the final result to a variable named 'result'
-2. Use ONLY pandas operations - pandas and numpy are already imported as 'pd' and 'np'
-3. UNDERSTAND what input wants exactly
-4. The DataFrame is already loaded as 'df'
-5. Do NOT include any import statements in your code
+1. Use ONLY pandas operations - pandas and numpy are already imported as 'pd' and 'np'
+2. UNDERSTAND what input wants exactly
+3. The DataFrame is already loaded as 'df'
+4. Do NOT include any import statements in your code
 
 Question: {query}
-Available Columns: {columns}
-Data Types: {df_info}
 """
         
         prompt = PromptTemplate(
             template=template,
-            input_variables=["query", "columns", "df_info"],
+            input_variables=["query", "data_info"],
             partial_variables={"format_instructions": self.parser.get_format_instructions()}
         )
 
@@ -105,11 +155,7 @@ Data Types: {df_info}
         logger.info(f"Generating code for query: {self.query}")
                         
         try:
-            response = chain.invoke({
-                "query": self.query,
-                "columns": list(self.df.columns),
-                "df_info": self.df.dtypes.to_dict()
-            })
+            response = chain.invoke({ "query": self.query, "data_info":self.data_info })
             
             if isinstance(response, dict):
                 if "text" in response:
@@ -143,7 +189,6 @@ Data Types: {df_info}
         return True
 
     def _setup_tools(self):
-        """Setup data analysis tools"""
         logger.info("Setting up tools")
         
         def get_data_summary(query: str = "") -> str:
@@ -153,27 +198,65 @@ Data Types: {df_info}
             if self.df is None:
                 return "No data loaded"
             
+            context_info="No data available"
+            columnInfo_info="No data available"
+            doc_link = "No source available"
+            columnInfo_link = "No source available"
+            
             try:
                 shape_info = f"{self.df.shape[0]} rows x {self.df.shape[1]} columns"
                 columns_list = [str(col).replace('{', '[').replace('}', ']') for col in self.df.columns]
-                columns_info = ", ".join(columns_list)
-                
-                return f"""
+                columns = ", ".join(columns_list)
+                d_types=dict(self.df.dtypes)
+
+                if self.context_finder and query:
+                    try:
+                        context_info = self.context_finder.return_context(query, top_k=3)
+                        if not context_info.strip():
+                            context_info = "No relevant context found"
+                        doc_link = self.doc_path
+                        self.current_context = context_info
+                    except Exception as e:
+                        logger.error(f"Error getting context: {e}")
+
+                if self.columnInfo:
+                    try:
+                        columnInfo_info = self.columnInfo
+                        columnInfo_link = self.columnInfo_path
+                    except Exception as e:
+                        logger.error(f"Error getting column info: {e}")
+
+                self.data_info= f"""
 Data Summary:
 - Shape: {shape_info}
-- Columns: {columns_info}
-- Data Types: {dict(self.df.dtypes)}
-- Missing Values: {dict(self.df.isnull().sum())}
-- Basic Statistics:
-{self.df.describe().to_string()}
+- Columns: {columns}
+- Data Types: {d_types}
+
+
+Relevant Context:
+{context_info}
+
+Column info:
+{columnInfo_info}
+
+Source of context={doc_link}
+Source of cocolumn info text={columnInfo_link}
+
 """
+                self.database_info_loaded=True
+                return self.data_info
+            
             except Exception as e:
                 logger.error(f"Error getting data summary: {e}")
-                return f"Error getting data summary: {str(e)}"
-        
+            
+
         def generate_pandas_code(query: str = "") -> str: 
             """Generate pandas code here"""
             logger.info(f"Generate pandas code for query: {query}")
+
+            if not self.data_info_loaded or not self.data_info:
+                    logger.info("Database info not loaded, loading automatically...")
+                    get_data_summary(query)
 
             try:
                 if query:
@@ -184,7 +267,7 @@ Data Summary:
                 return f"Code generation failed: {str(e)}"
 
         def execute_python_code(pandas_code: str) -> str:
-            """Execute pandas code safely on the DataFrame"""
+            """Execute pandas code"""
             logger.info(f"Executing pandas code: {pandas_code}")
             
             if self.df is None:
@@ -192,7 +275,7 @@ Data Summary:
             
             try:
                 if not self._is_safe_code(pandas_code):
-                    return "Code contains potentially dangerous operations and cannot be executed"
+                    return "Code is dangerous"
                 
                 logger.info("Executing code in safe environment")
                 
@@ -217,23 +300,48 @@ Data Summary:
                 
                 if result is not None:
                     logger.info("Code executed successfully")
+
+                    if isinstance(result, pd.Series):
+                        result=result.to_frame()
                     
                     if isinstance(result, pd.DataFrame):
                         if result.empty:
-                            return "Code executed successfully. Result: Empty DataFrame"
+                            formatted_output= "Code executed successfully. Result: Empty DataFrame"
+                            
+                            self.the_answer= PythonExecutionResult(
+                                success=True,
+                                dataframe=result,
+                                formatted_output= formatted_output
+                            )
+                        
+                            return formatted_output
+                    
+
                         if len(result) > 20:
                             display_result = result.head(20)
-                            return f"Code executed successfully. Result (showing first 20 rows of {len(result)}):\n{display_result.to_string()}"
+
+
+                            formatted_output= f"Code executed successfully. Result (showing first 20 rows of {len(result)}):\n{display_result.to_string()}"
+                            
+                            self.the_answer= PythonExecutionResult(
+                                success=True,
+                                dataframe=result,
+                                formatted_output= formatted_output
+                            )
+                        
+                            return formatted_output
+
                         else:
-                            return f"Code executed successfully. Result:\n{result.to_string()}"
-                    
-                    elif isinstance(result, pd.Series):
-                        if len(result) > 20:
-                            display_result = result.head(20)
-                            return f"Code executed successfully. Result (showing first 20 items of {len(result)}):\n{display_result.to_string()}"
-                        else:
-                            return f"Code executed successfully. Result:\n{result.to_string()}"
-                    
+                            formatted_output= f"Code executed successfully. Result:\n{result.to_string()}"
+                            
+                            self.the_answer= PythonExecutionResult(
+                                success=True,
+                                dataframe=result,
+                                formatted_output= formatted_output
+                            )
+                        
+                            return formatted_output
+
                     else:
                         return f"Code executed successfully. Result: {result}"
                 else:
@@ -248,7 +356,7 @@ Data Summary:
         self.tools = [
             Tool(
                 name="data_summary", 
-                description="Get data summary and statistics including shape, columns, data types, missing values, and basic statistics", 
+                description="Get data summary and statistics including shape, columns, data types, column info and context", 
                 func=get_data_summary
             ),
             Tool(
@@ -269,28 +377,15 @@ Data Summary:
         
         try:
             self.query = query
-            
-            if self.df is None:
-                return AgentResult(
-                    success=False,
-                    error="No dataframe available",
-                    metadata={"agent": self.agent_name, "query": query}
-                )
-            
-            try:
-                response = self.agent_executor.invoke({"input": query})
-                logger.info(f"Agent response: {response}")
-                
-                return AgentResult(
-                    success=True,
-                    data=response,
-                    metadata={"agent": self.agent_name, "query": query}
-                )
-            except Exception as agent_error:
-                logger.warning(f"Agent failed: {agent_error}, using fallback")
-                return AgentResult(success=False, error=error_msg)
 
+            response = self.agent_executor.invoke({"input": query})
             
+            return AgentResult(
+                success=True,
+                data=response,
+                metadata={"agent": self.agent_name, "query": query, "dataframe":self.the_answer.dataframe}
+            )
+        
         except Exception as e:
             error_msg = f"[{self.agent_name}] Error processing query '{query}': {str(e)}"
             logger.error(error_msg)
@@ -306,7 +401,7 @@ def main():
                 raise ValueError("GROQ_API_KEY not found")
             
             llm = ChatGroq(
-                model_name="llama-3.3-70b-versatile",  
+                model_name="openai/gpt-oss-120b",  
                 api_key=groq_api_key,
                 temperature=0.1
             )
@@ -320,12 +415,17 @@ def main():
             system = DataAnalysisAgent(llm=llm, df=df)
             
             result = system.process(query)
+            result_info=result.data["output"]
+
+            if result.metadata.get("dataframe") is not None:
+                dataframe = result.metadata["dataframe"]     
+
             
             if result.success:
-                logger.info(f"**********{result.data}***********")
-                print(f"Result: {result.data}")
+                print(f"Result: {result_info}\n\n")
+                print(f"*"*50)
+                print(f"{dataframe}")
             else:
-                logger.error(f"**********{result.error}***********")
                 print(f"Error: {result.error}")
             
         except Exception as e:

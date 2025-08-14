@@ -8,6 +8,7 @@ __pycache__/
 *.pyc
 *.pyd
 *.pyo
+*.pdf
 *.dll
 *.lib
 *.so
@@ -30,5 +31,4 @@ __pycache__/
 *.duckdb
 chroma_db/
 venvAgent/
-/temp_column_column_info.pdf
-/temp_context_columns.pdf
+*.log

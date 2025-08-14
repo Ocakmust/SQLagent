@@ -10,7 +10,7 @@ from loggerCenter import LoggerCenter
 logger = LoggerCenter().get_logger()
 
 class VectorStore:
-    """Manages vector embeddings and similarity search"""
+    """Manages vector embeddings"""
     
     def __init__(self, collection_name: str = "document_embeddings"):
         self.collection_name = collection_name
@@ -47,7 +47,6 @@ class VectorStore:
             if not metadata:
                 metadata = [{"source": f"doc_{i}"} for i in range(len(documents))]
             
-            # Ensure all lists have the same length
             if len(documents) != len(ids) or len(documents) != len(metadata):
                 raise ValueError("Documents, IDs, and metadata must have the same length")
             

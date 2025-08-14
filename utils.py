@@ -71,7 +71,7 @@ class BaseSpecializedAgent(ABC):
                 tools=self.tools, 
                 verbose=True,
                 handle_parsing_errors=True,
-                return_intermediate_steps=True
+                max_iterations=3, 
             )
             logger.info(f"Agent {self.agent_name} setup completed successfully")
         except Exception as e:
