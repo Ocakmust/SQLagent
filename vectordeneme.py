@@ -133,7 +133,7 @@ class ContextFind:
             if not text.strip():
                 raise ValueError(f"No text extracted from document: {self.document_path}")
             
-            chunks = self._split_text_into_chunks(text, chunk_size=100,overlap=10)
+            chunks = self._split_text_into_chunks(text, chunk_size=100,overlap=20)
             
             if not chunks:
                 raise ValueError("No chunks created from document text")
@@ -181,33 +181,33 @@ class ContextFind:
         
         return chunks
 
-# USAGE EXAMPLES:
-def example_usage():
-    """Example usage with different document types"""
+# # USAGE EXAMPLES:
+# def example_usage():
+#     """Example usage with different document types"""
     
-    # Example 1: PDF document
-    try:
-        pdf_context = ContextFind("yurt.pdf")
-        context = pdf_context.return_context("Değişim programına giden öğrenci",3)
-        print(f"PDF Context: {context}")
-    except Exception as e:
-        print(f"PDF Error: {e}")
+#     # Example 1: PDF document
+#     try:
+#         pdf_context = ContextFind("yurt.pdf")
+#         context = pdf_context.return_context("Değişim programına giden öğrenci",3)
+#         print(f"PDF Context: {context}")
+#     except Exception as e:
+#         print(f"PDF Error: {e}")
     
-    # Example 2: Word document
-    # try:
-    #     docx_context = ContextFind("manual.docx")
-    #     context = docx_context.return_context("How to configure the system?")
-    #     print(f"Word Context: {context}")
-    # except Exception as e:
-    #     print(f"Word Error: {e}")
+#     # Example 2: Word document
+#     # try:
+#     #     docx_context = ContextFind("manual.docx")
+#     #     context = docx_context.return_context("How to configure the system?")
+#     #     print(f"Word Context: {context}")
+#     # except Exception as e:
+#     #     print(f"Word Error: {e}")
     
-    # Example 3: Text document
-    # try:
-    #     txt_context = ContextFind("roadmap.txt")
-    #     context = txt_context.return_context("could i tell me what should i learn ?")
-    #     print(f"Text Context: {context}")
-    # except Exception as e:
-    #     print(f"Text Error: {e}")
+#     # Example 3: Text document
+#     # try:
+#     #     txt_context = ContextFind("roadmap.txt")
+#     #     context = txt_context.return_context("could i tell me what should i learn ?")
+#     #     print(f"Text Context: {context}")
+#     # except Exception as e:
+#     #     print(f"Text Error: {e}")
 
-if __name__ == "__main__":
-    example_usage()
+# if __name__ == "__main__":
+#     example_usage()

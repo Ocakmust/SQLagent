@@ -84,40 +84,40 @@ Focus on providing accurate external data and handling API limitations gracefull
             return AgentResult(success=False, error=str(e))
         
 
-def main():
-    query = "string"
-    while query != "-1":
-        try:
-            groq_api_key = os.getenv("GROQ_API_KEY")
-            if not groq_api_key:
-                raise ValueError("GROQ_API_KEY not found")
+# def main():
+#     query = "string"
+#     while query != "-1":
+#         try:
+#             groq_api_key = os.getenv("GROQ_API_KEY")
+#             if not groq_api_key:
+#                 raise ValueError("GROQ_API_KEY not found")
             
-            llm = ChatGroq(
-                model_name="llama3-8b-8192",
-                api_key=groq_api_key,
-                temperature=0.1
-            )
+#             llm = ChatGroq(
+#                 model_name="llama3-8b-8192",
+#                 api_key=groq_api_key,
+#                 temperature=0.1
+#             )
                     
-            query = input("\nEnter your natural language query: ").strip()
-            if query == "-1":
-                break
+#             query = input("\nEnter your natural language query: ").strip()
+#             if query == "-1":
+#                 break
             
-            # Create agent instance
-            system = ExternalAPIAgent(llm=llm)
+#             # Create agent instance
+#             system = ExternalAPIAgent(llm=llm)
             
-            # Process query
-            result = system.process(query)
+#             # Process query
+#             result = system.process(query)
             
-            if result.success:
-                logger.info(f"**********{result.data}***********")
-                print(f"Result: {result.data}")
-            else:
-                logger.error(f"**********{result.error}***********")
-                print(f"Error: {result.error}")
+#             if result.success:
+#                 logger.info(f"**********{result.data}***********")
+#                 print(f"Result: {result.data}")
+#             else:
+#                 logger.error(f"**********{result.error}***********")
+#                 print(f"Error: {result.error}")
             
-        except Exception as e:
-            logger.error(f"Application error: {e}")
-            print(f"Application error: {e}")
+#         except Exception as e:
+#             logger.error(f"Application error: {e}")
+#             print(f"Application error: {e}")
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

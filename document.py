@@ -29,10 +29,8 @@ class DocumentProcessor:
             if file_extension not in self.supported_formats:
                 raise ValueError(f"Unsupported file format: {file_extension}. Supported: {list(self.supported_formats.keys())}")
             
-            # Extract text using appropriate method
             text = self.supported_formats[file_extension](file_path)
             
-            # Cache the result
             self.text_cache[str(file_path)] = text
             logger.info(f"Text extracted from {file_path} ({file_extension})")
             return text
@@ -51,7 +49,7 @@ class DocumentProcessor:
                 for page_num, page in enumerate(pdf_reader.pages):
                     try:
                         page_text = page.extract_text()
-                        if page_text.strip():  # Only add non-empty pages
+                        if page_text.strip(): 
                             text += page_text + "\n"
                     except Exception as e:
                         logger.warning(f"Failed to extract text from page {page_num} in {file_path}: {e}")

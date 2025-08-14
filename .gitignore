@@ -1,6 +1,4 @@
 /.env
-/file.pdf
-/yurt.pdf
 Data/
 chroma_db/
 .venv2/.venv/
@@ -31,3 +29,6 @@ __pycache__/
 *.parquet
 *.duckdb
 chroma_db/
+venvAgent/
+/temp_column_column_info.pdf
+/temp_context_columns.pdf

@@ -58,12 +58,12 @@ class BaseSpecializedAgent(ABC):
         prompt = ChatPromptTemplate.from_messages([
             ("system", self._get_system_prompt()),
             ("user", "{input}"),
-            ("placeholder", "{agent_scratchpad}"),  # Bu önemli - "assistant" yerine "placeholder" olmalı
+            ("placeholder", "{agent_scratchpad}")
         ])
         return prompt
     
     def _setup_agent(self):
-        """Setup the agent with its specialized tools"""
+        """Setup the agent with specialized tools"""
         try:
             agent = create_tool_calling_agent(self.llm, self.tools, self._setup_prompt())
             self.agent_executor = AgentExecutor(

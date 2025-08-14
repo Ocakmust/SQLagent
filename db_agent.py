@@ -13,9 +13,19 @@ from document import DocumentProcessor
 from langchain_core.prompts import PromptTemplate
 from langchain.tools import StructuredTool
 
-
-
 logger = LoggerCenter().get_logger()
+
+
+class SQLExecutionResult(BaseModel):
+    """Container for SQL execution results with DataFrame"""
+    success: bool
+    query: str
+    dataframe: Optional[pd.DataFrame] = None
+    error_message: Optional[str] = None
+    formatted_output: str = ""
+
+    class Config:
+        arbitrary_types_allowed = True
 
 class SQLQuerryAgent(BaseSpecializedAgent):
 
@@ -26,13 +36,15 @@ class SQLQuerryAgent(BaseSpecializedAgent):
         self.db_manager = db_manager  
         self.doc_path = doc_path
         self.columnInfo_path = columnInfo_path
+
         self.db_tables = None
-        self.db_schema = None
-        
+        self.db_schema = None      
         self.context_finder = None
         self.doc_process = None
         self.columnInfo = None
         self.current_context = "No data available"
+        self.database_info_loaded = False  
+        self.the_answer=None
 
         if doc_path:
             try:
@@ -45,7 +57,7 @@ class SQLQuerryAgent(BaseSpecializedAgent):
         if columnInfo_path:
             try:
                 self.doc_process = DocumentProcessor()
-                self.columnInfo = self.doc_process.extract_text_from_documents(columnInfo_path)  # Fixed method name
+                self.columnInfo = self.doc_process.extract_text_from_documents(columnInfo_path)
                 logger.info(f"Column info loaded from: {columnInfo_path}")
             except Exception as e:
                 logger.error(f"Failed to load column info: {e}")
@@ -56,20 +68,36 @@ class SQLQuerryAgent(BaseSpecializedAgent):
 You are an expert SQL analyst with access to database tools and documentation context.
 
 AVAILABLE TOOLS:
-1. get_database_schema_tables: Get database schema and table information
-2. get_Info: Get relevant context and column info from documents based on query
-3. generate_sql_query: Generate SQL query based on requirements and context
-4. execute_sql_query: Execute SQL query and return results
+1. get_database_info: Get comprehensive database information including schema, tables, context, and column info
+2. generate_sql_query: Generate SQL query based on requirements and loaded context
+3. execute_sql_query: Execute SQL query and return structured DataFrame results
 
-INSTRUCTIONS:
-- ALWAYS GET relevant Context or Column info for understanding business requirements
-- Then, get database schema and tables information
-- For SQL generation: use generate_sql_query with context and schema
-- For data retrieval: use execute_sql_query to run queries and get results
-- Use document context to understand business rules and data relationships
-- Write clean, efficient SQL queries that align with business requirements
+WORKFLOW:
+1. ALWAYS start by calling get_database_info first to load all necessary information
+2. Then handle the user request - this could be:
+   - Generating a new SQL query from natural language → use generate_sql_query then execute_sql_query
+   - Executing a provided SQL query → use execute_sql_query directly
+   - Just providing information about the database → respond with loaded info
 
-Your goal is to help users query and analyze database data using both technical schema and business context!
+ANTI-HALLUCINATION RULES (CRITICAL):
+1. NEVER make up names, IDs, or any data not explicitly shown in results
+2. NEVER create fictional explanations or stories about the data
+3. NEVER interpret meanings beyond what the data explicitly shows
+4. If asked about specific individuals, ONLY mention those actually present in results
+5. Base ALL analysis strictly on factual numbers and values shown
+
+
+CRITICAL RESULT FORMATTING RULES:
+IF you receive SQL execution results, you MUST format your response as follows:
+
+**SQL QUERY EXECUTED:**
+```sql
+[the exact SQL query]
+```
+
+**DATAFRAME RESULTS:**
+[display the formatted table exactly as provided]
+
 """
     
     def _is_safe_sql(self, sql_query: str) -> bool:
@@ -89,44 +117,31 @@ Your goal is to help users query and analyze database data using both technical 
         return True
 
     def _generating_sql_query(self, user_request: str) -> str:
-        """Generate SQL query for the given request"""
+        """Generate SQL query for the given request using already loaded context"""
         template = """
-    You are an expert SQL analyst. You analyze the request STEP BY STEP and generate a clean SQL query that answers the request using the provided database schema and business context.
+You are an expert SQL analyst. Generate a clean SQL query that answers the request using the loaded database information.
 
-    IMPORTANT:
-    1. Do NOT include anything outside of SQL CODE and an Explanation.
-    2. Explanation MUST be about what is understood from the REQUEST.
-    Your response must be exactly this format:
-    {{"code": "your_sql_query_here", "explanation": "brief explanation"}}
+IMPORTANT:
+1. Database schema and context information are already loaded in the system
+2. Do NOT include anything outside of SQL CODE and an Explanation
+3. Your response must be exactly this format:
+{{"code": "your_sql_query_here", "explanation": "brief explanation"}}
 
-    {format_instructions}
+{format_instructions}
 
-    CRITICAL REQUIREMENTS:
-    1. Generate ONLY the SQL query without any markdown formatting or code blocks
-    2. Use proper table and column names from the schema
-    3. UNDERSTAND what the request wants exactly
-    4. Follow SQL best practices and optimization
-    5. Ensure the query is safe (SELECT operations only for data retrieval)
-    6. Use business context to understand data relationships and requirements
+CRITICAL REQUIREMENTS:
+1. Generate ONLY the SQL query without markdown formatting
+2. Use proper table and column names from the loaded schema
+3. Follow SQL best practices and optimization
+4. Ensure the query is safe (SELECT operations only)
+5. The system already has access to database schema, business context, and column info
 
-    DATABASE SCHEMA:
-    {db_schema}
-
-    AVAILABLE TABLES: 
-    {available_tables}
-
-    BUSINESS CONTEXT:
-    {business_context}
-
-    COLUMN INFO:
-    {column_info}
-
-    Request: {user_request}
-    """
+Request: {user_request}
+"""
         
         prompt = PromptTemplate(
             template=template,
-            input_variables=["user_request", "db_schema", "available_tables", "business_context", "column_info"],
+            input_variables=["user_request"],
             partial_variables={"format_instructions": self.parser.get_format_instructions()}
         )
 
@@ -135,21 +150,8 @@ Your goal is to help users query and analyze database data using both technical 
         logger.info(f"Generating SQL query for request: {user_request}")
                         
         try:
-            business_context = "No context available"
-            column_info = "No column info available"
-            
-            if hasattr(self, 'current_context') and self.current_context and self.current_context != "No data available":
-                business_context = self.current_context
-            
-            if self.columnInfo:
-                column_info = self.columnInfo
-
             response = chain.invoke({
-                "user_request": user_request,
-                "db_schema": self.db_schema or "Schema not loaded",
-                "available_tables": ', '.join(self.db_tables) if self.db_tables else "No tables available",
-                "business_context": business_context,
-                "column_info": column_info
+                "user_request": user_request
             })
             
             if isinstance(response, dict):
@@ -173,14 +175,10 @@ Your goal is to help users query and analyze database data using both technical 
             logger.error(f"Error in SQL generation: {e}")
             return f"Error generating SQL query: {str(e)}"
 
-
     def _setup_tools(self):
 
-        class DatabaseSchemaInput(BaseModel):
-            input_text: Optional[str] = Field(default="", description="Optional input text")
-        
-        class InfoInput(BaseModel):
-            user_query: str = Field(description="User query to find relevant context")
+        class DatabaseInfoInput(BaseModel):
+            user_query: Optional[str] = Field(default="", description="Optional user query to get relevant context and database info")
         
         class SQLGenerationInput(BaseModel):
             user_request: str = Field(description="User request for SQL query generation")
@@ -188,30 +186,33 @@ Your goal is to help users query and analyze database data using both technical 
         class SQLExecutionInput(BaseModel):
             sql_query: str = Field(description="SQL query to execute")
 
-        def get_database_schema_tables(input_text: str) -> str:
-            """Get Database Schema and Tables information using DatabaseManager"""
+        def get_database_info(user_query: str = "") -> str:
+            """Get comprehensive database information including schema, tables, context, and column info"""
             try:
-                logger.info("Getting Database Schema and Tables")
+                logger.info(f"Getting comprehensive database info for query: {user_query}")
                 
-                if not self.db_manager.is_connected():
-                    self.db_manager.connect()
-            
-                self.db_tables = self.db_manager.get_table_names()
+                result_sections = []
                 
-                if self.db_tables:
-                    schema_info = []
-                    for table in self.db_tables[:5]:  
-                        try:
-                            schema = self.db_manager.get_table_schema(table)
-                            columns_info = ', '.join([f"{col['column_name']} ({col['data_type']})" for col in schema])
-                            schema_info.append(f"Table {table}: {columns_info}")
-                        except Exception as e:
-                            logger.warning(f"Could not get schema for table {table}: {e}")
-                            schema_info.append(f"Table {table}: Schema unavailable")
+                try:
+                    if not self.db_manager.is_connected():
+                        self.db_manager.connect()
+                
+                    self.db_tables = self.db_manager.get_table_names()
                     
-                    self.db_schema = "\n".join(schema_info)
-                    
-                    result = f"""DATABASE INFORMATION:
+                    if self.db_tables:
+                        schema_info = []
+                        for table in self.db_tables[:5]:  
+                            try:
+                                schema = self.db_manager.get_table_schema(table)
+                                columns_info = ', '.join([f"{col['column_name']} ({col['data_type']})" for col in schema])
+                                schema_info.append(f"Table {table}: {columns_info}")
+                            except Exception as e:
+                                logger.warning(f"Could not get schema for table {table}: {e}")
+                                schema_info.append(f"Table {table}: Schema unavailable")
+                        
+                        self.db_schema = "\n".join(schema_info)
+                        
+                        database_section = f"""DATABASE SCHEMA:
 Available Tables: {', '.join(self.db_tables)}
 
 Table Schemas:
@@ -219,42 +220,37 @@ Table Schemas:
 
 Total Tables: {len(self.db_tables)}
 Connection Status: Connected"""
-                    return result
-                else:
-                    return "No database tables found or connection unavailable"
-            
-            except Exception as e:
-                error_msg = f"Get Database Schema and Tables failed: {e}"
-                logger.error(error_msg)
-                return error_msg
+                        result_sections.append(database_section)
+                    else:
+                        result_sections.append("DATABASE SCHEMA: No tables found or connection unavailable")
+                
+                except Exception as e:
+                    error_msg = f"Database schema retrieval failed: {e}"
+                    logger.error(error_msg)
+                    result_sections.append(f"DATABASE SCHEMA ERROR: {error_msg}")
+                
+                try:
+                    context_info = "No context available"
+                    columnInfo_info = "No column info available"
+                    doc_link = "Not provided"
+                    columnInfo_link = "Not provided"
+                    
+                    if self.context_finder and user_query:
+                        try:
+                            context_info = self.context_finder.return_context(user_query, top_k=3)
+                            if not context_info.strip():
+                                context_info = "No relevant context found"
+                            doc_link = self.doc_path
+                            self.current_context = context_info
+                        except Exception as e:
+                            logger.error(f"Error getting context: {e}")
+                            context_info = f"Error retrieving context: {str(e)}"
 
-        def get_Info(user_query: str) -> str:
-            """Get relevant context from documents and column info"""
-            try:
-                logger.info(f"Getting document info for query: {user_query}")
-                
-                columnInfo_info = "No column info available"
-                context_info = "No context available"
-                doc_link = "Not provided"
-                columnInfo_link = "Not provided"
-                
-                if self.context_finder:
-                    try:
-                        context_info = self.context_finder.return_context(user_query, top_k=3)
-                        if not context_info.strip():
-                            context_info = "No relevant context found"
-                        doc_link = self.doc_path
-                        self.current_context = context_info
-                    except Exception as e:
-                        logger.error(f"Error getting context: {e}")
-                        context_info = f"Error retrieving context: {str(e)}"
-
-                if self.columnInfo:
-                    columnInfo_info = self.columnInfo
-                    columnInfo_link = self.columnInfo_path
-                
-                if self.doc_path or self.columnInfo_path:
-                    result = f"""RELEVANT CONTEXT:
+                    if self.columnInfo:
+                        columnInfo_info = self.columnInfo
+                        columnInfo_link = self.columnInfo_path
+                    
+                    context_section = f"""RELEVANT CONTEXT OF THE DATABASE:
 {context_info}
 
 COLUMN INFO:
@@ -262,19 +258,32 @@ COLUMN INFO:
 
 Context retrieved from: {doc_link}
 Column Info retrieved from: {columnInfo_link}"""
-                    return result
+                    result_sections.append(context_section)
+                        
+                except Exception as e:
+                    error_msg = f"Context retrieval failed: {e}"
+                    logger.error(error_msg)
+                    result_sections.append(f"CONTEXT ERROR: {error_msg}")
+                
+                self.database_info_loaded = True
+                
+                if result_sections:
+                    return "\n\n" + "="*50 + "\n\n".join(result_sections)
                 else:
-                    return "No document sources available for additional context"
+                    return "No database information could be retrieved"
                     
             except Exception as e:
-                error_msg = f"Document info retrieval failed: {e}"
+                error_msg = f"Database info retrieval failed: {e}"
                 logger.error(error_msg)
                 return error_msg
 
         def generate_sql_query(user_request: str) -> str:
-            """Generate SQL query based on user request, database schema, and document context"""
+            """Generate SQL query based on user request using already loaded database context"""
             try:
                 logger.info(f"Generating SQL query for request: {user_request}")
+                
+                if not self.database_info_loaded:
+                    return "Error: Database information not loaded. Please call get_database_info first."
                 
                 result = self._generating_sql_query(user_request)
                 return result
@@ -294,7 +303,6 @@ Column Info retrieved from: {columnInfo_link}"""
                 
                 sql_query = sql_query.strip()
                
-            
                 if sql_query.startswith('```sql'):
                     sql_query = sql_query.replace('```sql', '').replace('```', '').strip()
                 elif sql_query.startswith('```'):
@@ -310,7 +318,7 @@ Column Info retrieved from: {columnInfo_link}"""
                     
                     num_rows = len(result_df)
                     num_cols = len(result_df.columns)
-                    
+
                     if num_rows > 20:
                         display_df = result_df.head(20)
                         result_text = f"""SQL Executed Successfully!
@@ -330,36 +338,47 @@ Results ({num_rows} rows, {num_cols} columns):
 {result_df.to_string(index=False)}"""
                     
                     logger.info(f"Query executed successfully, returned {num_rows} rows")
-                    return result_text
+
+                    self.the_answer=SQLExecutionResult(
+                    success= True,
+                    query= sql_query,
+                    dataframe=result_df,
+                    formatted_output=result_text)
+
+                    return self.the_answer.formatted_output
                     
                 else:
-                    if sql_query.strip().upper().startswith('SELECT'):
-                        return f"SQL Executed Successfully!\n\nQuery: {sql_query}\n\nResults: No data returned (empty result set)"
-                    else:
-                        return f"SQL Executed Successfully!\n\nQuery: {sql_query}\n\nResults: Query executed successfully"
-                
+                    result_text=f"SQL Executed Successfully!\n\nQuery: {sql_query}\n\nResults: Query executed successfully"
+
+                    self.the_answer=SQLExecutionResult(
+                    success= True,
+                    query= sql_query,
+                    dataframe=pd.DataFrame(),
+                    formatted_output=result_text)
+
+                    return self.the_answer.formatted_output
+
+                      
+                                    
             except Exception as e:
                 error_msg = f"SQL execution failed: {e}\n\nQuery: {sql_query}"
                 logger.error(error_msg)
+                
                 return error_msg
+            
+
+
 
         self.tools = [
             StructuredTool.from_function(
-                name="get_database_schema_tables", 
-                description="Get database schema and table information using DatabaseManager", 
-                func=get_database_schema_tables,
-                args_schema=DatabaseSchemaInput
-
-            ),
-            StructuredTool.from_function(
-                name="get_Info",
-                description="Get relevant business context and column info from documents based on user query",
-                func=get_Info,
-                args_schema=InfoInput
+                name="get_database_info",
+                description="Get comprehensive database information including schema, tables, business context, and column info based on user query",
+                func=get_database_info,
+                args_schema=DatabaseInfoInput
             ),
             StructuredTool.from_function(
                 name="generate_sql_query",
-                description="Generate SQL query based on user request, database schema, and business context",
+                description="Generate SQL query based on user request using already loaded database context and schema",
                 func=generate_sql_query,
                 args_schema=SQLGenerationInput
             ),
@@ -371,6 +390,9 @@ Results ({num_rows} rows, {num_cols} columns):
             )
         ]
     
+
+
+
     def process(self, query: str = None) -> AgentResult:
         """Process query through SQL agent with document context and database operations"""
         if query:
@@ -391,21 +413,22 @@ Results ({num_rows} rows, {num_cols} columns):
                     "db_tables": self.db_tables,
                     "doc_path": self.doc_path,
                     "columnInfo_path": self.columnInfo_path,
-                    "context_used": bool(self.current_context and self.current_context != "No data available")
+                    "context_used": bool(self.current_context and self.current_context != "No data available"),
+                    "database_info_loaded": self.database_info_loaded,
+                    "the_answer": self.the_answer
                 }
             )
             
         except Exception as e:
             error_msg = f"SQL agent processing failed: {str(e)}"
             logger.error(error_msg)
-            return AgentResult(
-                success=False,
-                error=error_msg,
-                metadata={
-                    "agent": self.agent_name,
-                    "query": self.query
-                }
-            )
+            return error_msg
+            
+        
+
+
+
+        
 
 def example_usage():
     """Example usage with corrected parameters"""
@@ -423,36 +446,42 @@ def example_usage():
     try:
         groq_api_key = os.getenv("GROQ_API_KEY")
         if not groq_api_key:
-            print("❌ GROQ_API_KEY not found")
+            print("GROQ_API_KEY not found")
             return
         
-        llm = ChatGroq(model_name="llama-3.1-8b-instant", api_key=groq_api_key)
+        llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=groq_api_key)
         db_manager = DatabaseManager(db_params)
         
-        # Note: Fixed parameter order - db_manager comes first
         agent = SQLQuerryAgent(
             llm=llm,
             db_manager=db_manager,
-            columnInfo_path="file.pdf"
+            doc_path="columns.pdf"
         )
         
         test_queries = [
-            "Get me top 5 rows having highest EXIST KRS BNK NONCASH RISK value. You can find "
-        ]
+
+            "Bankaya sadık ve kadın girşimci olup toplam gayri nakdi riski en düşük olan 5 kullanıcıyı getir"
+
+            ]
         
         for query in test_queries:
-            print(f"\n🔍 Testing: {query}")
+            print(f"\nTesting: {query}")
             result = agent.process(query)
-            
+            result_output=result.data["output"]
+
+            if result.metadata.get("the_answer") is not None:
+                dataframe = result.metadata["the_answer"].dataframe        
+
             if result.success:
-                print(f"✅ Success")
-                print(f"📋 Result: {result.data}")
+                print(f"Success")
+                print(f"Result: {result_output}")
+                print(dataframe)
             else:
-                print(f"❌ Error: {result.error}")
+                print(f"Error: {result.error}")
             print("-" * 50)
             
     except Exception as e:
-        print(f"❌ Example failed: {e}")
+        print(f"Example failed: {e}")
 
 if __name__ == "__main__":
     example_usage()

@@ -15,9 +15,8 @@ logger = LoggerCenter().get_logger()
 class DataAnalysisAgent(BaseSpecializedAgent):
     """Specialized agent for data analysis tasks"""
     
-    def __init__(self, llm: ChatGroq, df: pd.DataFrame, query):
+    def __init__(self, llm: ChatGroq, df: pd.DataFrame):
         self.df = df
-        self.query = query
         self.parser = PydanticOutputParser(pydantic_object=CodeOutput)
         super().__init__("DataAnalysis", llm)
 
@@ -33,7 +32,6 @@ class DataAnalysisAgent(BaseSpecializedAgent):
                 
                 sample_df = self.df.head(3)
                 sample_str = sample_df.to_string(index=False)
-                # Curly braces'leri güvenli karakterlerle değiştir
                 safe_sample = sample_str.replace('{', '[').replace('}', ']')
                 
                 data_context = f"""
@@ -102,7 +100,6 @@ Data Types: {df_info}
             partial_variables={"format_instructions": self.parser.get_format_instructions()}
         )
 
-        # LLMChain yerine yeni format kullan
         chain = prompt | self.llm | self.parser
         
         logger.info(f"Generating code for query: {self.query}")
@@ -114,7 +111,6 @@ Data Types: {df_info}
                 "df_info": self.df.dtypes.to_dict()
             })
             
-            # Handle different response formats
             if isinstance(response, dict):
                 if "text" in response:
                     code = response["text"].code if hasattr(response["text"], 'code') else str(response["text"])
@@ -217,17 +213,14 @@ Data Summary:
                 local_vars = {}
                 exec(pandas_code, safe_globals, local_vars)
                 
-                # Get result
                 result = local_vars.get("result", None)
                 
                 if result is not None:
                     logger.info("Code executed successfully")
                     
-                    # Format result for display
                     if isinstance(result, pd.DataFrame):
                         if result.empty:
                             return "Code executed successfully. Result: Empty DataFrame"
-                        # Limit output size for readability
                         if len(result) > 20:
                             display_result = result.head(20)
                             return f"Code executed successfully. Result (showing first 20 rows of {len(result)}):\n{display_result.to_string()}"
@@ -324,9 +317,8 @@ def main():
             if query == "-1":
                 break
             
-            system = DataAnalysisAgent(llm=llm, df=df, query=query)
+            system = DataAnalysisAgent(llm=llm, df=df)
             
-            # Process query
             result = system.process(query)
             
             if result.success:
