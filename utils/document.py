@@ -1,6 +1,6 @@
 from pathlib import Path
 import PyPDF2
-from loggerCenter import LoggerCenter
+from utils.loggerCenter import LoggerCenter
 logger = LoggerCenter().get_logger()
 
 class DocumentProcessor:

@@ -4,9 +4,9 @@ from typing import List, Dict, Optional
 import chromadb
 from chromadb.utils import embedding_functions
 from sentence_transformers import SentenceTransformer
-from document import DocumentProcessor
+from utils.document import DocumentProcessor
 
-from loggerCenter import LoggerCenter
+from utils.loggerCenter import LoggerCenter
 logger = LoggerCenter().get_logger()
 
 class VectorStore:

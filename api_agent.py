@@ -1,7 +1,7 @@
 
 from langchain_groq import ChatGroq
-from loggerCenter import LoggerCenter
-from utils import AgentResult, BaseSpecializedAgent
+from utils.loggerCenter import LoggerCenter
+from utils.base_agent import AgentResult, BaseSpecializedAgent
 from langchain.tools import Tool
 import os
 

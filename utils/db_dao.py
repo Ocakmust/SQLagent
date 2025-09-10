@@ -2,7 +2,7 @@ from typing import Dict, List
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-from loggerCenter import LoggerCenter
+from utils.loggerCenter import LoggerCenter
 
 logger = LoggerCenter().get_logger()
 

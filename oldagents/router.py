@@ -6,17 +6,17 @@ from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
 from langchain.tools import Tool
 from langchain.tools import StructuredTool
-from document import DocumentProcessor
+from utils.document import DocumentProcessor
 
 
-from loggerCenter import LoggerCenter
+from utils.loggerCenter import LoggerCenter
 
-from utils import AgentResult, BaseSpecializedAgent
-from analiz import DataAnalysisAgent
-from db_agent import SQLQuerryAgent
+from utils.base_agent import AgentResult, BaseSpecializedAgent
+from oldagents.pandas_agent import DataAnalysisAgent
+from oldagents.db_agent import SQLQuerryAgent
 from api_agent import ExternalAPIAgent
-from db_dao import DatabaseManager
-from vectordeneme import ContextFind
+from utils.db_dao import DatabaseManager
+from utils.vectordeneme import ContextFind
 
 logger = LoggerCenter().get_logger()
 
@@ -172,13 +172,17 @@ SIMPLE ROUTING RULES:
 - If question is about database/tables → use route_to_sql  
 - If question is about weather/news/current info → use route_to_api
 
-IMPORTANT: 
-1. Use only ONE tool per question
-2. Pass the EXACT user query to the tool without any modifications or comments
-3. After getting the result, provide the final answer immediately
+IMPORTANT RULES FOR ROUTING:
+1. For each user query, you MUST choose exactly ONE tool to execute. Do NOT attempt to call multiple tools, chain tool calls, or loop between tools.
+2. Always pass the ORIGINAL user query to the selected tool without any modifications, explanations, or comments.
+3. Once a tool returns a result, immediately use that result to provide the final answer to the user. Do NOT attempt to call another tool afterward.
+4. Do NOT generate any additional queries or attempt to guess what other tools might be useful. Stick strictly to the single tool chosen.
+5. Never enter a loop between tools. Even if the output suggests further queries, you must stop after one tool execution.
 
-NOTE: If the user query contains additional context information, use that context to make better routing decisions but pass the original query as-is to the selected tool."""
-
+NOTE:
+- Use the context of the user query only to select the appropriate tool. Do not modify the query for the tool.
+- If a query is ambiguous, pick the best single tool based on the available resources and rules above.
+"""
     def _setup_tools(self):
         """Router araçlarını ayarla"""
         
@@ -316,8 +320,7 @@ def main():
             "password": "123",
             "port": "5432"
         },
-        'doc_path':"temp_context_columns.pdf",
-        'csv_path':"Data/results.csv"
+        'csv_path':"Data/goalscorers.csv"
     }
     
     try:
@@ -326,7 +329,7 @@ def main():
             raise ValueError("GROQ_API_KEY not found")
         
         llm = ChatGroq(
-            model_name="openai/gpt-oss-120b",
+            model_name="llama-3.1-8b-instant",
             api_key=groq_api_key,
             temperature=0.1
         )
@@ -335,48 +338,40 @@ def main():
         router = RouterAgent(llm=llm, config=config)
         print("Router ready!\n")
         
-        while True:
-            try:
-                query = input("Enter your query (or 'q' to quit): ").strip()
+        try:
+            query = "Get me a list of 10 scorers who scored most goals and their total goals. Data must have columns of scorers and the total goals they have scored."
+            
+            
+            print(f"\nProcessing: {query}")
+            result = router.process(query)
+            
+            if result.success:
+                print("Result:")
+                output = result.data.get('output', result.data) if isinstance(result.data, dict) else result.data
+                print(output)
                 
-                if query.lower() in ['q', 'quit', 'exit']:
-                    print("Goodbye!")
-                    break
+                # Check for DataFrames
+                if result.metadata.get("sql_dataframe") is not None:
+                    sql_df = result.metadata["sql_dataframe"] 
+                    if isinstance(sql_df, pd.DataFrame) and not sql_df.empty:
+                        print(f"\nSQL DataFrame available: {sql_df.shape}")
+                        print(sql_df.head())
                 
-                if not query:
-                    continue
-                
-                print(f"\nProcessing: {query}")
-                result = router.process(query)
-                
-                if result.success:
-                    print("Result:")
-                    output = result.data.get('output', result.data) if isinstance(result.data, dict) else result.data
-                    print(output)
+                if result.metadata.get("csv_dataframe") is not None:
+                    csv_df = result.metadata["csv_dataframe"]
+                    if isinstance(csv_df, pd.DataFrame) and not csv_df.empty:
+                        print(f"\nCSV DataFrame available: {csv_df.shape}")
+                        print(csv_df.head())
                     
-                    # Check for DataFrames
-                    if result.metadata.get("sql_dataframe") is not None:
-                        sql_df = result.metadata["sql_dataframe"] 
-                        if isinstance(sql_df, pd.DataFrame) and not sql_df.empty:
-                            print(f"\nSQL DataFrame available: {sql_df.shape}")
-                            print(sql_df.head())
-                    
-                    if result.metadata.get("csv_dataframe") is not None:
-                        csv_df = result.metadata["csv_dataframe"]
-                        if isinstance(csv_df, pd.DataFrame) and not csv_df.empty:
-                            print(f"\nCSV DataFrame available: {csv_df.shape}")
-                            print(csv_df.head())
-                        
-                else:
-                    print(f"Error: {result.error}")
-                
-                print("\n" + "-" * 40 + "\n")
-                
-            except KeyboardInterrupt:
-                print("\nExiting...")
-                break
-            except Exception as e:
-                print(f"Error: {e}")
+            else:
+                print(f"Error: {result.error}")
+            
+            print("\n" + "-" * 40 + "\n")
+            
+        except KeyboardInterrupt:
+            print("\nExiting...")
+        except Exception as e:
+            print(f"Error: {e}")
                 
     except Exception as e:
         print(f"System initialization failed: {e}")

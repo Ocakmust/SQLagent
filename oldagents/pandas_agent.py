@@ -6,16 +6,23 @@ from langchain.chains import LLMChain
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain.tools import Tool
-from pydantic import BaseModel
-from document import DocumentProcessor
-from loggerCenter import LoggerCenter
-from utils import AgentResult, BaseSpecializedAgent, CodeOutput
+from pydantic import BaseModel, Field
+from utils.document import DocumentProcessor
+from utils.loggerCenter import LoggerCenter
+from utils.base_agent import  BaseSpecializedAgent,  to_dataframe_safe,AgentResult
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.agents import create_tool_calling_agent, AgentExecutor
+from langchain.tools import StructuredTool
 
-from vectordeneme import ContextFind
+from utils.vectordeneme import ContextFind
 
 logger = LoggerCenter().get_logger()
+
+class CodeOutput(BaseModel):
+    """Pydantic model for structured code output"""
+    code: str = Field(description="Python pandas/SQL code that assigns the result to 'result' variable.")
+    explanation: Optional[str] = Field(description="Brief explanation of what the code does", default=None)
+    data_source: Optional[str] = Field(description="Source of data (csv, postgres, api)", default="csv")
 
 class PythonExecutionResult(BaseModel):
     success: bool
@@ -102,13 +109,6 @@ IMPORTANT INSTRUCTIONS and WORKFLOW:
 - Be helpful and provide clear explanations of the results
 
 
-ANTI-HALLUCINATION RULES (CRITICAL):
-1. NEVER make up names, IDs, or any data not explicitly shown in results
-2. NEVER create fictional explanations or stories about the data
-3. NEVER interpret meanings beyond what the data explicitly shows
-4. If asked about specific individuals, ONLY mention those actually present in results
-5. Base ALL analysis strictly on factual numbers and values shown
-
 VERY IMPORTANT:
 -IF CODE GENERATING TOOL (generate_pandas_code) IS USED RETURN CODE ONLY
 
@@ -189,7 +189,16 @@ Question: {query}
         return True
 
     def _setup_tools(self):
+        
         logger.info("Setting up tools")
+        class DataInfoInput(BaseModel):
+            query: Optional[str] = Field(default="", description="Optional user query to get relevant context and data info")
+        
+        class PythonGenerationInput(BaseModel):
+            query: str = Field(description="User request for python code generation")
+        
+        class PythonExecutionInput(BaseModel):
+            pandas_code: str = Field(description="Python code to execute")
         
         def get_data_summary(query: str = "") -> str:
             """Get comprehensive data summary"""
@@ -301,8 +310,8 @@ Source of cocolumn info text={columnInfo_link}
                 if result is not None:
                     logger.info("Code executed successfully")
 
-                    if isinstance(result, pd.Series):
-                        result=result.to_frame()
+                    if not isinstance(result, pd.DataFrame):
+                        result=to_dataframe_safe(result)
                     
                     if isinstance(result, pd.DataFrame):
                         if result.empty:
@@ -354,21 +363,24 @@ Source of cocolumn info text={columnInfo_link}
                 return error_msg
                 
         self.tools = [
-            Tool(
+            StructuredTool.from_function(
                 name="data_summary", 
                 description="Get data summary and statistics including shape, columns, data types, column info and context", 
-                func=get_data_summary
+                func=get_data_summary,
+                args_schema=DataInfoInput
             ),
-            Tool(
+            StructuredTool.from_function(
                 name="generate_pandas_code", 
                 description="Generate pandas code from natural language query to analyze the DataFrame", 
-                func=generate_pandas_code
+                func=generate_pandas_code,
+                args_schema=PythonGenerationInput
             ),
-            Tool(
+            StructuredTool.from_function(
                 name="execute_python_code",
                 description="Execute pandas code safely on the DataFrame. The code should assign results to a variable named 'result'",
-                func=execute_python_code
-            ),
+                func=execute_python_code,
+                args_schema=PythonExecutionInput
+            )
         ]
 
     def process(self, query: str) -> AgentResult:
@@ -401,14 +413,14 @@ def main():
                 raise ValueError("GROQ_API_KEY not found")
             
             llm = ChatGroq(
-                model_name="openai/gpt-oss-120b",  
+                model_name="llama-3.1-8b-instant",  
                 api_key=groq_api_key,
                 temperature=0.1
             )
         
             df = pd.read_csv("Data/goalscorers.csv")
             
-            query = input("\nEnter your natural language query: ").strip()
+            query = "Get me a list of 10 players who scored most goals"
             if query == "-1":
                 break
             

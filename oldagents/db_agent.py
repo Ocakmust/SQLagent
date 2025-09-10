@@ -1,15 +1,15 @@
 from typing import Optional
 from langchain_groq import ChatGroq
-from loggerCenter import LoggerCenter
-from utils import AgentResult, CodeOutput
-from utils import BaseSpecializedAgent
+from utils.loggerCenter import LoggerCenter
+from utils.base_agent import AgentResult, CodeOutput
+from utils.base_agent import BaseSpecializedAgent
 from langchain.tools import Tool
 from pydantic import BaseModel, Field
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 import pandas as pd
-from vectordeneme import ContextFind  
-from document import DocumentProcessor
+from utils.vectordeneme import ContextFind  
+from utils.document import DocumentProcessor
 from langchain_core.prompts import PromptTemplate
 from langchain.tools import StructuredTool
 
@@ -38,8 +38,6 @@ class SQLQuerryAgent(BaseSpecializedAgent):
 
         self.db_tables = None
         self.db_schema = None
-
-
 
 
         self.context_finder = None
@@ -124,6 +122,11 @@ DATAFRAME RESULTS:
         """Generate SQL query for the given request using already loaded context"""
         template = """
 You are an expert SQL analyst. Generate a clean SQL query that answers the request using the loaded database information.
+
+SQL INFORMATION:
+- Database type: PostgreSQL
+- USE syntax available to this type.
+
 
 === LOADED DATABASE INFORMATION ===
 {database_info}
@@ -298,7 +301,6 @@ Column Info retrieved from: {columnInfo_link}"""
                 logger.error(error_msg)
                 return error_msg
 
-
         def execute_sql_query(sql_query: str) -> str:
             """Execute SQL query safely using DatabaseManager and return results"""
             try:
@@ -346,10 +348,10 @@ Results ({num_rows} rows, {num_cols} columns):
                     logger.info(f"Query executed successfully, returned {num_rows} rows")
 
                     self.the_answer=SQLExecutionResult(
-                    success= True,
-                    query= sql_query,
-                    dataframe=result_df,
-                    formatted_output=result_text)
+                                    success= True,
+                                    query= sql_query,
+                                    dataframe=result_df,
+                                    formatted_output=result_text)
 
                     return self.the_answer.formatted_output
                     
@@ -357,10 +359,10 @@ Results ({num_rows} rows, {num_cols} columns):
                     result_text=f"SQL Executed Successfully!\n\nQuery: {sql_query}\n\nResults: Query executed successfully"
 
                     self.the_answer=SQLExecutionResult(
-                    success= True,
-                    query= sql_query,
-                    dataframe=pd.DataFrame(),
-                    formatted_output=result_text)
+                                success= True,
+                                query= sql_query,
+                                dataframe=pd.DataFrame(),
+                                formatted_output=result_text)
 
                     return self.the_answer.formatted_output
 
@@ -421,8 +423,15 @@ Results ({num_rows} rows, {num_cols} columns):
         except Exception as e:
             error_msg = f"SQL agent processing failed: {str(e)}"
             logger.error(error_msg)
-            return error_msg
-            
+            return AgentResult(
+                success=False,
+                error=error_msg,
+                data=None,
+                metadata={
+                    "agent": self.agent_name,
+                    "query": self.query
+                }
+            )
         
 
 
@@ -432,7 +441,7 @@ Results ({num_rows} rows, {num_cols} columns):
 def example_usage():
     """Example usage with corrected parameters"""
     import os
-    from db_dao import DatabaseManager
+    from utils.db_dao import DatabaseManager
     
     db_params = {
         "host": "localhost",
@@ -454,12 +463,12 @@ def example_usage():
         agent = SQLQuerryAgent(
             llm=llm,
             db_manager=db_manager,
-            doc_path="temp_context_columns.pdf"
+            doc_path="temp_columns.pdf"
         )
         
         test_queries = [
 
-            "Bankaya sadık ve kadın girşimci olup toplam gayri nakdi riski en düşük olan 5 kullanıcıyı getir"
+             "Kadın girişimci olup bankaya sadık olan en risksiz 5 kişiyi döndür."
 
             ]
         
